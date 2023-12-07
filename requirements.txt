@@ -1,4 +1,4 @@
---extra-index-url https://asia-northeast1-python.pkg.dev/meet-notify/google-apps-meet/simple/
+--extra-index-url https://asia-northeast1-python.pkg.dev/*****/google-apps-meet/simple/
 blinker==1.7.0
 cachetools==5.3.2
 certifi==2023.11.17
