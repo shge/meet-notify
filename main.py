@@ -1,19 +1,21 @@
 import json
 import os
 import sys
+import traceback
+from base64 import b64decode
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
 import functions_framework
+from cloudevents.http import CloudEvent
 from google.apps import meet_v2beta as meet
 from google.auth.transport import requests
 from google.cloud import pubsub_v1
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-from cloudevents.http import CloudEvent
 
 from slack import send_slack
 
@@ -131,10 +133,9 @@ def fetch_participant_from_session(session_name: str) -> meet.Participant:
     return client.get_participant(name=participant_resource_name)
 
 
-def on_conference_started(message: pubsub_v1.subscriber.message.Message):
+def on_conference_started(payload: dict):
     """Display information about a conference when started."""
-    payload = json.loads(message.data)
-    resource_name = payload.get("conferenceRecord").get("name")
+    resource_name = payload.get("conferenceRecord", {}).get("name")
     client = meet.ConferenceRecordsServiceClient(credentials=USER_CREDENTIALS)
     conference = client.get_conference_record(name=resource_name)
     print(
@@ -142,19 +143,17 @@ def on_conference_started(message: pubsub_v1.subscriber.message.Message):
     )
 
 
-def on_conference_ended(message: pubsub_v1.subscriber.message.Message):
+def on_conference_ended(payload: dict):
     """Display information about a conference when ended."""
-    payload = json.loads(message.data)
-    resource_name = payload.get("conferenceRecord").get("name")
+    resource_name = payload.get("conferenceRecord", {}).get("name")
     client = meet.ConferenceRecordsServiceClient(credentials=USER_CREDENTIALS)
     conference = client.get_conference_record(name=resource_name)
     print(f"Conference (ID {conference.name}) ended at {conference.end_time.rfc3339()}")
 
 
-def on_participant_joined(message: pubsub_v1.subscriber.message.Message):
+def on_participant_joined(payload: dict):
     """Display information about a participant when they join a meeting."""
-    payload = json.loads(message.data)
-    resource_name = payload.get("participantSession").get("name")
+    resource_name = payload.get("participantSession", {}).get("name")
     client = meet.ConferenceRecordsServiceClient(credentials=USER_CREDENTIALS)
     session = client.get_participant_session(name=resource_name)
     participant = fetch_participant_from_session(resource_name)
@@ -163,10 +162,9 @@ def on_participant_joined(message: pubsub_v1.subscriber.message.Message):
     send_slack(f"{display_name} が参加しました: {MEETING_URL}")
 
 
-def on_participant_left(message: pubsub_v1.subscriber.message.Message):
+def on_participant_left(payload: dict):
     """Display information about a participant when they leave a meeting."""
-    payload = json.loads(message.data)
-    resource_name = payload.get("participantSession").get("name")
+    resource_name = payload.get("participantSession", {}).get("name")
     client = meet.ConferenceRecordsServiceClient(credentials=USER_CREDENTIALS)
     session = client.get_participant_session(name=resource_name)
     participant = fetch_participant_from_session(resource_name)
@@ -175,30 +173,38 @@ def on_participant_left(message: pubsub_v1.subscriber.message.Message):
     send_slack(f"{display_name} が退出しました: {MEETING_URL}")
 
 
-def on_recording_ready(message: pubsub_v1.subscriber.message.Message):
+def on_recording_ready(payload: dict):
     """Display information about a recorded meeting when artifact is ready."""
-    payload = json.loads(message.data)
-    resource_name = payload.get("recording").get("name")
+    resource_name = payload.get("recording", {}).get("name")
     client = meet.ConferenceRecordsServiceClient(credentials=USER_CREDENTIALS)
     recording = client.get_recording(name=resource_name)
     print(f"Recording available at {recording.drive_destination.export_uri}")
 
 
-def on_transcript_ready(message: pubsub_v1.subscriber.message.Message):
+def on_transcript_ready(payload: dict):
     """Display information about a meeting transcript when artifact is ready."""
-    payload = json.loads(message.data)
-    resource_name = payload.get("transcript").get("name")
+    resource_name = payload.get("transcript", {}).get("name")
     client = meet.ConferenceRecordsServiceClient(credentials=USER_CREDENTIALS)
     transcript = client.get_transcript(name=resource_name)
     print(f"Transcript available at {transcript.docs_destination.export_uri}")
 
 
-def on_message(message: pubsub_v1.subscriber.message.Message) -> None:
+def on_message(message: pubsub_v1.subscriber.message.Message | dict) -> None:
     """Handles an incoming event from pub/sub API."""
-    event_type = message.attributes.get("ce-type")
-    print("event_type", event_type)
+    # if type is <class 'google.cloud.pubsub_v1.subscriber.message.Message'>
+    if isinstance(message, pubsub_v1.subscriber.message.Message):
+        event_type = message.attributes.get("ce-type")
+        subject = message.attributes.get("ce-subject")
+        data_raw = message.data
+        data = json.loads(data_raw)
+    else:
+        event_type = message.get("attributes", {}).get("ce-type")
+        subject = message.get("attributes", {}).get("ce-subject")
+        data_raw = b64decode(message.get("data", "")).decode("utf-8")
+        data = json.loads(data_raw)
 
-    if not message.attributes.get("ce-subject", "").endswith(SPACE_NAME):
+    print("event_type:", event_type)
+    if not subject.endswith(SPACE_NAME):
         return
 
     handler = {
@@ -212,11 +218,15 @@ def on_message(message: pubsub_v1.subscriber.message.Message) -> None:
 
     try:
         if handler is not None:
-            handler(message)
-        message.ack()
-    except Exception as error:
-        print("Unable to process event")
-        print(error)
+            handler(data)
+        try:
+            message.ack()
+            print("Message acknowledged.")
+        except:
+            pass
+    except:
+        print("Unable to process event:")
+        traceback.print_exc()
 
 
 @functions_framework.cloud_event
