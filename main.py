@@ -1,8 +1,8 @@
 import json
 import os
-import sys
 import traceback
 from base64 import b64decode
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 
@@ -96,6 +96,27 @@ def list_subscriptions(event_type: str):
         params={"filter": f'event_types:"{event_type}"'},
     )
     return response
+
+
+def update_subscription(subscription_name: str):
+    """Update a subscription."""
+    session = requests.AuthorizedSession(USER_CREDENTIALS)
+    expire_time = (datetime.utcnow() + timedelta(days=7)).isoformat() + "Z"
+    response = session.patch(
+        f"https://workspaceevents.googleapis.com/v1beta/{subscription_name}",
+        params={"updateMask": "expireTime"},
+        json={"expireTime": expire_time},
+    )
+    return response
+
+
+def update_all_subscriptions():
+    data = list_subscriptions(
+        event_type="google.workspace.meet.participant.v2.joined"
+    ).json()
+    for subscription in data["subscriptions"]:
+        print("Updating subscription: ", subscription["name"])
+        print(update_subscription(subscription["name"]).json())
 
 
 def delete_subscription(subscription_name: str):
@@ -215,6 +236,8 @@ def on_message(message: pubsub_v1.subscriber.message.Message | dict) -> None:
         "google.workspace.meet.recording.v2.fileGenerated": on_recording_ready,
         "google.workspace.meet.transcript.v2.fileGenerated": on_transcript_ready,
     }.get(event_type)
+
+    update_all_subscriptions()
 
     try:
         if handler is not None:
